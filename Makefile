@@ -12,7 +12,10 @@ LDLIBS  := -lbpf -lelf -lz
 # Part 3/4 drop their .c files into consumer/ and they get built automatically
 CONSUMER_SRC := $(wildcard consumer/*.c)
 
-TARGETS := $(BUILD)/evdump $(BUILD)/libedr.a
+# Part 2: every workloads/X.c becomes build/X (standalone, no eBPF)
+WORKLOAD_BIN := $(patsubst workloads/%.c,$(BUILD)/%,$(wildcard workloads/*.c))
+
+TARGETS := $(BUILD)/evdump $(BUILD)/libedr.a $(WORKLOAD_BIN)
 ifneq ($(CONSUMER_SRC),)
 TARGETS += $(BUILD)/edr_consumer
 endif
@@ -45,8 +48,11 @@ $(BUILD)/libedr.a: $(BUILD)/backend.o
 $(BUILD)/evdump: tools/evdump.c $(BUILD)/libedr.a
 	$(CC) $(CFLAGS) $< $(BUILD)/libedr.a $(LDLIBS) -o $@
 
-$(BUILD)/edr_consumer: $(CONSUMER_SRC) $(BUILD)/libedr.a
+$(BUILD)/edr_consumer: $(CONSUMER_SRC) $(wildcard consumer/*.h) $(BUILD)/libedr.a
 	$(CC) $(CFLAGS) -Iconsumer $(CONSUMER_SRC) $(BUILD)/libedr.a $(LDLIBS) -lm -o $@
+
+$(WORKLOAD_BIN): $(BUILD)/%: workloads/%.c | $(BUILD)
+	$(CC) -O2 -g -Wall -Wextra -o $@ $<
 
 # quick smoke test of all three designs (needs root)
 test: all

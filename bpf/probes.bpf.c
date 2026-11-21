@@ -30,6 +30,12 @@ const volatile __u32 self_tgid        = 0;   /* never trace the consumer itself 
 const volatile __u64 low_cap_bytes    = 0;   /* PRIO: low ring may only fill this much */
 const volatile bool  sampling_enabled = false;
 const volatile __u32 sample_thr_pct   = 70;  /* start sampling above this fill % */
+/* PID namespace of the consumer (dev/inode of /proc/self/ns/pid). pid, tgid,
+ * ppid and self_tgid are all expressed in this namespace, so they match what
+ * getpid()/ps show in user space. Matters on WSL2 and in containers, where
+ * the distro runs in its own PID namespace; on a plain VM it changes nothing. */
+const volatile __u64 pidns_dev        = 0;
+const volatile __u64 pidns_ino        = 0;
 
 /* ---- buffers (sizes are overridden by user space) ---------------------- */
 struct {                                   /* DESIGN_FIFO */
@@ -67,24 +73,51 @@ __u64 g_seq = 0;
 struct edr_kstats kstats = {};
 
 /* ---- helpers ----------------------------------------------------------- */
-static __always_inline bool skip_self(void)
+/* tgid of `t`'s thread-group leader as seen at pid-namespace depth `level`
+ * (0 if the process is not visible there). */
+static __always_inline __u32 tgid_at_level(struct task_struct *t, unsigned int level)
 {
-	return self_tgid && (bpf_get_current_pid_tgid() >> 32) == self_tgid;
+	struct pid *p = BPF_CORE_READ(t, group_leader, thread_pid);
+	struct upid u = {};
+
+	if (!p || BPF_CORE_READ(p, level) < level)
+		return 0;
+	bpf_probe_read_kernel(&u, sizeof(u), (void *)p +
+			      bpf_core_field_offset(struct pid, numbers) +
+			      level * sizeof(struct upid));
+	return u.nr;
 }
 
-static __always_inline void fill_common(struct edr_event *e, __u16 type, __u8 prio)
+/* Fills the fields every event has. Returns true if the event comes from
+ * the consumer itself and must be skipped. */
+static __always_inline bool fill_common(struct edr_event *e, __u16 type, __u8 prio)
 {
 	__u64 id = bpf_get_current_pid_tgid();
 	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+	struct task_struct *parent = BPF_CORE_READ(task, real_parent);
+	struct bpf_pidns_info ns = {};
 
-	e->pid  = (__u32)id;
-	e->tgid = id >> 32;
+	if (pidns_ino &&
+	    !bpf_get_ns_current_pid_tgid(pidns_dev, pidns_ino, &ns, sizeof(ns))) {
+		/* current task lives in the consumer's namespace */
+		e->pid  = ns.pid;
+		e->tgid = ns.tgid;
+		e->ppid = tgid_at_level(parent, BPF_CORE_READ(task, thread_pid, level));
+	} else {
+		/* no namespace configured, or a task outside it: global ids */
+		e->pid  = (__u32)id;
+		e->tgid = id >> 32;
+		e->ppid = BPF_CORE_READ(parent, tgid);
+	}
+	if (self_tgid && e->tgid == self_tgid)
+		return true;
+
 	e->uid  = (__u32)bpf_get_current_uid_gid();
-	e->ppid = BPF_CORE_READ(task, real_parent, tgid);
 	e->cpu  = bpf_get_smp_processor_id();
 	e->type = type;
 	e->prio = prio;
 	bpf_get_current_comm(e->comm, sizeof(e->comm));
+	return false;
 }
 
 /* Adaptive sampling (priority design, low class only).
@@ -154,10 +187,9 @@ static __always_inline int emit(void *ctx, struct edr_event *e)
 
 #define NEW_EVENT(e, type, prio)                 \
 	struct edr_event e;                      \
-	if (skip_self())                         \
-		return 0;                        \
 	__builtin_memset(&e, 0, sizeof(e));      \
-	fill_common(&e, type, prio)
+	if (fill_common(&e, type, prio))         \
+		return 0
 
 /* ---- process events ---------------------------------------------------- */
 SEC("tp/sched/sched_process_exec")

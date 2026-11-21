@@ -37,8 +37,8 @@ We then stress each design and measure event loss, ordering, detection rate/late
 |---|---|---|---|
 | 0. Setup, shared contract | Ali | `include/`, `docs/`, `scripts/` | ✅ done |
 | 1. eBPF probes + 3 buffer designs | Ali | `bpf/`, `src/`, `tools/` | ✅ done, tested |
-| 2. Workloads + attack simulators | _?_ | `workloads/` | ⬜ |
-| 3. Consumer, logger, reordering | _?_ | `consumer/` | ⬜ |
+| 2. Workloads + attack simulators | Sarosh | `workloads/` | ✅ done, tested (see `workloads/README.md`) |
+| 3. Consumer, logger, reordering | Sarosh | `consumer/` | ✅ done, tested; detector plugs in via `consumer/consumer.h` |
 | 4. Detector + adaptive sampling eval | _?_ (same person as 3, or split) | `consumer/` | ⬜ |
 | 5. Benchmark harness | _?_ | `bench/` | ⬜ |
 | 6. Analysis + graphs | _?_ (same person as 5) | `analysis/` | ⬜ |

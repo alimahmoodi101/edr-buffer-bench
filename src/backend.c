@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
@@ -132,6 +133,15 @@ struct backend *backend_open(const struct backend_opts *o, edr_event_cb cb, void
 	b->skel->rodata->self_tgid        = getpid();
 	b->skel->rodata->sampling_enabled = o->sampling && o->design == DESIGN_PRIO;
 	b->skel->rodata->sample_thr_pct   = o->sample_thr_pct;
+
+	/* report pids as seen from our own PID namespace (WSL2, containers) */
+	{
+		struct stat st;
+		if (stat("/proc/self/ns/pid", &st) == 0) {
+			b->skel->rodata->pidns_dev = st.st_dev;
+			b->skel->rodata->pidns_ino = st.st_ino;
+		}
+	}
 
 	/* size the buffers; unused rings get a single page */
 	bpf_map__set_max_entries(b->skel->maps.rb_fifo, page);
