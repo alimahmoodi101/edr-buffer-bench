@@ -16,8 +16,28 @@ An EDR can only detect what reaches it, and events are most likely to be dropped
 ## Results
 
 <!-- RESULTS:START -->
-_Not generated yet. Run `python3 analysis/analyze.py results/ --out analysis/figures/ --update-readme` after the experiments._
+Buffer memory 256K, mean ± std over the repeats. All graphs and tables: [`analysis/figures/`](analysis/figures/), numbers in [`analysis/figures/results_tables.md`](analysis/figures/results_tables.md).
+
+**Event rate max, CPU load 0**
+
+| Design | runs | events/s | total loss % | critical loss % | sampled out % | ordering acc. % | detection % | latency ms | consumer CPU % |
+|---|---|---|---|---|---|---|---|---|---|
+| FIFO | 3 | 797812 ± 41026 | 32.87 ± 4.10 | 46.12 ± 6.39 | 0.00 ± 0.00 | 97.08 ± 0.63 | 29.6 ± 17.0 | 53.5 ± 5.7 | 53.6 ± 1.9 |
+| Per-CPU | 3 | 208263 ± 23523 | 7.90 ± 4.36 | 0.48 ± 0.83 | 0.00 ± 0.00 | 38.31 ± 2.49 | 100.0 ± 0.0 | 30.6 ± 5.5 | 41.7 ± 0.9 |
+| Priority | 3 | 734274 ± 16380 | 39.20 ± 1.51 | 0.00 ± 0.00 | 0.00 ± 0.00 | 96.90 ± 1.02 | 100.0 ± 0.0 | 67.1 ± 0.6 | 52.1 ± 1.4 |
+| Prio+sampling | 3 | 755055 ± 80052 | 5.48 ± 1.15 | 0.00 ± 0.00 | 41.61 ± 7.08 | 97.94 ± 0.44 | 100.0 ± 0.0 | 63.1 ± 5.4 | 48.5 ± 3.1 |
+
+**Highest paced event rate 200k, CPU load 0 (same offered load for every design)**
+
+| Design | runs | events/s | total loss % | critical loss % | sampled out % | ordering acc. % | detection % | latency ms | consumer CPU % |
+|---|---|---|---|---|---|---|---|---|---|
+| FIFO | 3 | 186715 ± 16 | 0.11 ± 0.13 | 0.00 ± 0.00 | 0.00 ± 0.00 | 99.12 ± 0.52 | 100.0 ± 0.0 | 11.1 ± 1.1 | 23.7 ± 0.8 |
+| Per-CPU | 3 | 185390 ± 1579 | 4.35 ± 0.88 | 0.34 ± 0.30 | 0.00 ± 0.00 | 38.83 ± 0.83 | 100.0 ± 0.0 | 22.9 ± 3.7 | 35.9 ± 1.0 |
+| Priority | 3 | 186729 ± 22 | 0.60 ± 0.57 | 0.00 ± 0.00 | 0.00 ± 0.00 | 99.21 ± 0.40 | 100.0 ± 0.0 | 10.9 ± 2.4 | 24.0 ± 1.1 |
+| Prio+sampling | 3 | 186736 ± 6 | 0.01 ± 0.02 | 0.00 ± 0.00 | 0.65 ± 0.85 | 99.34 ± 0.14 | 100.0 ± 0.0 | 12.8 ± 3.7 | 23.2 ± 1.9 |
 <!-- RESULTS:END -->
+
+Experiments run: 4 design variants, event rates 50k, 200k and unpaced (as fast as possible), CPU load 0% and 150%, 3 repeats each (72 runs) plus 12 overhead runs, 256K buffer memory, 30 s per run, Ubuntu on WSL2 with 4 vCPUs. The 50% and 100% CPU levels, the local LLM load and a larger buffer budget were not run.
 
 Graphs are in [`analysis/figures/`](analysis/figures/), tables in [`analysis/figures/results_tables.md`](analysis/figures/results_tables.md), and the check of our four hypotheses in [`analysis/figures/hypotheses.md`](analysis/figures/hypotheses.md).
 
@@ -102,6 +122,9 @@ Every number in the graphs is the mean over the repeats of one configuration; er
 - High priority: exec, fork, setuid, rename, unlink. Low priority: open, read, write.
 - "Critical loss" covers all high-priority events on the machine, not only those of the injected attacks. Detection rate is the attack-level measure.
 - The detector uses only high-priority events and sampling only affects low-priority ones, so sampling cannot reduce detection in this setup. It only changes loss and CPU cost.
+- At the unpaced rate the designs do not reach the same event rate (the traced workload runs slower with some designs), so loss percentages there are not directly comparable. `analysis/figures/fig_achieved_rate.png` shows the rate each design really carried; the paced 200k rate is the like-for-like comparison.
+- CPU load also slows the event generators, so 150% CPU load gives fewer events per second than 0% at the unpaced rate.
+- The benign compile used for the overhead runs triggers one false ransomware alert per run (bulk deletion of build files), the same for every design.
 - Detection latency includes up to one reorder window (50 ms) when an event before it was lost.
 - Overhead is measured with a compile benchmark only, without background noise.
 - Events carry the pid in the consumer's PID namespace, so tgids match `injections.csv` on WSL2 and in containers as well.

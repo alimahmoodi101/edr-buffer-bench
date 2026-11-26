@@ -524,9 +524,11 @@ def results_markdown(runs, ovh, agg, det):
                      f"{int(r.groupby(['variant', 'rate', 'cpu_load']).size().min())}-"
                      f"{int(r.groupby(['variant', 'rate', 'cpu_load']).size().max())} repeats each. "
                      "Values are mean ± std over the runs.\n")
-        sub, rate, load = pressure_subset(r)
-        parts.append(f"### Highest pressure: event rate `{fmt_rate(rate)}`, CPU load `{load}`\n")
-        parts.append(stat_table(sub, variants) + "\n")
+        mxr = max(set(r['rate']), key=lambda x: (x == 0, x))
+        for rate, load in config_list(r):
+            sub = r[(r['rate'] == rate) & (r['cpu_load'] == load)]
+            parts.append(f"### {config_title(rate, load, mxr)}\n")
+            parts.append(stat_table(sub, variants) + "\n")
         parts.append("### Mean over every configuration\n")
         parts.append(stat_table(r, variants) + "\n")
         rates = rates_present(r)
@@ -566,86 +568,133 @@ class Check:
         self.hid, self.text, self.values, self.verdict = hid, text, values, verdict
 
 
+def config_list(runs):
+    """Configurations used by the tables and the hypothesis check: highest rate at the
+    lowest and highest CPU load, and the highest paced rate at the lowest load (the only
+    one where every design is offered the same events/s)."""
+    rates = sorted(set(runs["rate"]))
+    mx = max(rates, key=lambda r: (r == 0, r))
+    loads = sorted([l for l in set(runs["cpu_load"]) if str(l).isdigit()], key=int) or sorted(set(runs["cpu_load"]))
+    lo, hi = loads[0], loads[-1]
+    cfgs = [(mx, lo)] + ([(mx, hi)] if hi != lo else [])
+    paced = [r for r in rates if r > 0]
+    if paced and max(paced) != mx:
+        cfgs.append((max(paced), lo))
+    return cfgs
+
+
+def config_title(rate, load, mx):
+    kind = "Event rate max" if rate == mx else f"Highest paced event rate {fmt_rate(rate)}"
+    note = " (same offered load for every design)" if rate != mx else ""
+    return f"{kind}, CPU load {load}{note}"
+
+
 def evaluate_hypotheses(runs, ovh, tol=1.0):
-    """Turn H1-H4 from the proposal into simple numeric checks on the highest-
-    pressure configuration. The verdict is a starting point: read the numbers."""
+    """H1-H4 as numeric checks. Two numbers count as equal when they differ by less
+    than the run-to-run spread (std), 5% or a small absolute tolerance; such cases are
+    'inconclusive' and never 'supported'."""
     out = {}
     for mem_b in sorted(set(runs["mem_bytes"])):
         r = runs[runs["mem_bytes"] == mem_b]
-        sub, rate, load = pressure_subset(r)
         o = ovh[ovh["mem_bytes"] == mem_b] if not ovh.empty else ovh
+        mx = max(set(r["rate"]), key=lambda x: (x == 0, x))
+        for rate, load in config_list(r):
+            sub = r[(r["rate"] == rate) & (r["cpu_load"] == load)]
 
-        def m(v, col, frame=sub):
-            s = frame.loc[frame["variant"] == v, col]
-            return float(s.mean()) if len(s) else float("nan")
+            def m(v, col, frame=sub):
+                s = frame.loc[frame["variant"] == v, col]
+                return float(s.mean()) if len(s) else float("nan")
 
-        def ov(v):
-            if o.empty:
-                return float("nan")
-            s = o.loc[o["variant"] == v, "overhead_pct"]
-            return float(s.mean()) if len(s) else float("nan")
+            def sd(v, col, frame=sub):
+                s = frame.loc[frame["variant"] == v, col]
+                return float(s.std(ddof=1)) if len(s) > 1 else 0.0
 
-        have = lambda *vs: all(not math.isnan(m(v, "total_loss_pct")) for v in vs)  # noqa: E731
-        fmt = lambda d: ", ".join(f"{SHORT[k]} {x:.2f}" for k, x in d.items())  # noqa: E731
-        checks = []
+            def cmp(col, a, b, frame=sub):
+                x, y = m(a, col, frame), m(b, col, frame)
+                if abs(x - y) <= max(sd(a, col, frame), sd(b, col, frame), 0.05 * max(abs(x), abs(y)), 0.1):
+                    return 0
+                return 1 if x > y else -1
 
-        if have(*CORE):
-            ordr = {v: m(v, "ordering_acc_pct") for v in CORE}
-            loss = {v: m(v, "total_loss_pct") for v in CORE}
-            cpu = {v: m(v, "consumer_cpu_pct") for v in CORE}
-            checks.append(Check("H1", "FIFO has the best ordering accuracy (%)", fmt(ordr),
-                                "supported" if ordr["fifo"] >= max(ordr["percpu"], ordr["prio"]) - 1e-9 else "not supported"))
-            if max(loss.values()) < 0.5:
-                v1 = "not testable (no overload: all designs lost < 0.5%)"
-            else:
-                v1 = "supported" if loss["fifo"] >= max(loss["percpu"], loss["prio"]) else "not supported"
-            checks.append(Check("H1", "FIFO has the highest total loss (%)", fmt(loss), v1))
-            checks.append(Check("H1", "FIFO has the highest consumer CPU (% of one core)", fmt(cpu),
-                                "supported" if cpu["fifo"] >= max(cpu["percpu"], cpu["prio"]) else "not supported"))
-            oo = {v: ov(v) for v in CORE}
-            if not any(math.isnan(x) for x in oo.values()):
-                checks.append(Check("H1", "FIFO has the highest application slowdown (%)", fmt(oo),
-                                    "supported" if oo["fifo"] >= max(oo["percpu"], oo["prio"]) else "not supported"))
-            # H2
-            if max(loss.values()) < 0.5:
-                v2 = "not testable (no overload: all designs lost < 0.5%)"
-            else:
-                v2 = "supported" if loss["percpu"] <= min(loss["fifo"], loss["prio"]) else "not supported"
-            checks.append(Check("H2", "Per-CPU has the lowest total loss (%)", fmt(loss), v2))
-            checks.append(Check("H2", "Per-CPU has the lowest ordering accuracy (%)", fmt(ordr),
-                                "supported" if ordr["percpu"] <= min(ordr["fifo"], ordr["prio"]) else "not supported"))
-            ooo = {v: m(v, "ooo_critical") for v in CORE}
-            checks.append(Check("H2", "Per-CPU has the most out-of-order events inside detected attack sequences",
-                                fmt(ooo), "supported" if ooo["percpu"] >= max(ooo["fifo"], ooo["prio"]) else "not supported"))
-            # H3
-            crit = {v: m(v, "critical_loss_pct") for v in CORE}
-            if loss["prio"] < 10:
-                v3 = f"not testable (priority design lost only {loss['prio']:.1f}% in total, no heavy loss to protect against)"
-            else:
-                v3 = "supported" if crit["prio"] < 1.0 and crit["prio"] < min(crit["fifo"], crit["percpu"]) else "not supported"
-            checks.append(Check("H3", "Priority design keeps critical loss near 0 (< 1%) while total loss is high (>= 10%) "
-                                      "and beats the other designs", f"critical loss: {fmt(crit)}; prio total loss {loss['prio']:.2f}", v3))
-            checks.append(Check("H3", "Cost: latency for low-priority events", "not measured (only detection latency is)", "not measured"))
-        if have("prio", "priosamp"):
-            dr = {v: m(v, "detection_rate_pct") for v in ("prio", "priosamp")}
-            checks.append(Check("H4", "Sampling does not reduce the detection rate (within 1 point)", fmt(dr),
-                                "supported" if dr["priosamp"] >= dr["prio"] - tol else "not supported"))
-            lo = {v: m(v, "total_loss_pct") for v in ("prio", "priosamp")}
-            un = {v: m(v, "unseen_pct") for v in ("prio", "priosamp")}
-            if lo["prio"] < 0.5:
-                vl = "not testable (priority design already lost < 0.5%)"
-            else:
-                vl = "supported" if lo["priosamp"] < lo["prio"] else "not supported"
-            checks.append(Check("H4", "Sampling reduces buffer overload (events lost, %)", fmt(lo), vl))
-            checks.append(Check("H4", "(context) events not seen, incl. those sampled out on purpose (%)", fmt(un), "info"))
-            cp = {v: m(v, "consumer_cpu_pct") for v in ("prio", "priosamp")}
-            checks.append(Check("H4", "Sampling reduces consumer CPU (% of one core)", fmt(cp),
-                                "supported" if cp["priosamp"] < cp["prio"] else "not supported"))
-            oo = {v: ov(v) for v in ("prio", "priosamp")}
-            if not any(math.isnan(x) for x in oo.values()):
-                checks.append(Check("H4", "Sampling does not increase application slowdown (%)", fmt(oo),
-                                    "supported" if oo["priosamp"] <= oo["prio"] + tol else "not supported"))
-        out[(human_bytes(mem_b), rate, load)] = checks
+            def extreme(v, col, highest, others=CORE):
+                res = [cmp(col, v, w) * (1 if highest else -1) for w in others if w != v]
+                if all(x > 0 for x in res):
+                    return "supported"
+                if any(x < 0 for x in res):
+                    return "not supported"
+                return "inconclusive (equal to another design within the spread)"
+
+            have = lambda *vs: all(not math.isnan(m(v, "total_loss_pct")) for v in vs)  # noqa: E731
+            fmt = lambda d: ", ".join(f"{SHORT[k]} {x:.2f}" for k, x in d.items())  # noqa: E731
+            checks = []
+            if have(*CORE):
+                ach = {v: m(v, "achieved_rate") for v in CORE + ["priosamp"] if have(v)}
+                checks.append(Check("", "(context) achieved events/s", ", ".join(f"{SHORT[k]} {x:.0f}" for k, x in ach.items()), "info"))
+                uneq = (" (caution: the designs carried unequal event rates)"
+                        if min(ach[v] for v in CORE) < 0.8 * max(ach[v] for v in CORE) else "")
+                ordr = {v: m(v, "ordering_acc_pct") for v in CORE}
+                loss = {v: m(v, "total_loss_pct") for v in CORE}
+                crit = {v: m(v, "critical_loss_pct") for v in CORE}
+                cpu = {v: m(v, "consumer_cpu_pct") for v in CORE}
+                ooo = {v: m(v, "ooo_critical") for v in CORE}
+                nolo = max(loss.values()) < 0.5
+                nt = "not testable (no overload: all designs lost < 0.5%)"
+                c = cmp("ordering_acc_pct", "fifo", "percpu")
+                checks.append(Check("H1", "FIFO keeps events in order better than per-CPU (ordering accuracy %)", fmt(ordr),
+                                    "supported" if c > 0 else ("not supported" if c < 0 else "inconclusive")))
+                checks.append(Check("H1", "FIFO has the best ordering accuracy of the three designs", fmt(ordr),
+                                    extreme("fifo", "ordering_acc_pct", True)))
+                checks.append(Check("H1", "FIFO has the highest total loss (%)", fmt(loss),
+                                    (nt if nolo else extreme("fifo", "total_loss_pct", True)) + (uneq if not nolo else "")))
+                checks.append(Check("H1", "FIFO has the highest loss of critical (high-priority) events (%)", fmt(crit),
+                                    (nt if nolo else extreme("fifo", "critical_loss_pct", True)) + (uneq if not nolo else "")))
+                checks.append(Check("H1", "FIFO has the highest consumer CPU (% of one core)", fmt(cpu),
+                                    extreme("fifo", "consumer_cpu_pct", True)))
+                checks.append(Check("H2", "Per-CPU has the lowest total loss (%)", fmt(loss),
+                                    (nt if nolo else extreme("percpu", "total_loss_pct", False)) + (uneq if not nolo else "")))
+                checks.append(Check("H2", "Per-CPU has the lowest ordering accuracy (%)", fmt(ordr),
+                                    extreme("percpu", "ordering_acc_pct", False)))
+                checks.append(Check("H2", "Per-CPU has the most out-of-order events inside detected attack sequences", fmt(ooo),
+                                    "not testable (no design had out-of-order events inside detected attacks)" if max(ooo.values()) == 0
+                                    else extreme("percpu", "ooo_critical", True)))
+                if loss["prio"] < 10:
+                    v3 = f"not testable (priority design lost only {loss['prio']:.1f}% in total)"
+                else:
+                    v3 = "supported" if crit["prio"] < 1.0 else "not supported"
+                checks.append(Check("H3", "Priority keeps critical loss near 0 (< 1%) while its total loss is high (>= 10%)",
+                                    f"critical loss {crit['prio']:.2f}%, total loss {loss['prio']:.2f}%", v3))
+                for w, nm in (("fifo", "FIFO"), ("percpu", "per-CPU")):
+                    c = cmp("critical_loss_pct", "prio", w)
+                    checks.append(Check("H3", f"Priority loses fewer critical events than {nm} (%)",
+                                        f"Priority {crit['prio']:.2f}, {SHORT[w]} {crit[w]:.2f}",
+                                        nt if nolo else ("supported" if c < 0 else ("not supported" if c > 0 else
+                                                          "inconclusive (equal within the spread)"))))
+                checks.append(Check("H3", "Cost: latency for low-priority events", "not measured (only detection latency is)", "not measured"))
+            if have("prio", "priosamp"):
+                dr = {v: m(v, "detection_rate_pct") for v in ("prio", "priosamp")}
+                checks.append(Check("H4", "Sampling does not reduce the detection rate", fmt(dr),
+                                    "supported" if dr["priosamp"] >= dr["prio"] - tol else "not supported"))
+                lo = {v: m(v, "total_loss_pct") for v in ("prio", "priosamp")}
+                un = {v: m(v, "unseen_pct") for v in ("prio", "priosamp")}
+                c = cmp("total_loss_pct", "priosamp", "prio")
+                checks.append(Check("H4", "Sampling reduces events lost in the buffer (%)", fmt(lo),
+                                    "not testable (priority design already lost < 0.5%)" if lo["prio"] < 0.5
+                                    else ("supported" if c < 0 else ("not supported" if c > 0 else "inconclusive (equal within the spread)"))))
+                checks.append(Check("H4", "(context) events not seen, including those sampled out on purpose (%)", fmt(un), "info"))
+                cp = {v: m(v, "consumer_cpu_pct") for v in ("prio", "priosamp")}
+                c = cmp("consumer_cpu_pct", "priosamp", "prio")
+                checks.append(Check("H4", "Sampling reduces consumer CPU (% of one core)", fmt(cp),
+                                    "supported" if c < 0 else ("not supported" if c > 0 else "inconclusive (equal within the spread)")))
+            out[(human_bytes(mem_b), rate, load, rate == mx)] = checks
+        if not o.empty and set(CORE) <= set(o["variant"]):
+            s = {v: o.loc[o["variant"] == v, "overhead_pct"] for v in o["variant"].unique()}
+            mean = {v: float(x.mean()) for v, x in s.items()}
+            std = {v: float(x.std(ddof=1)) if len(x) > 1 else 0.0 for v, x in s.items()}
+            eq = lambda a, b: abs(mean[a] - mean[b]) <= max(std[a], std[b], 0.5)  # noqa: E731
+            f1 = ("supported" if all(mean["fifo"] > mean[w] and not eq("fifo", w) for w in ("percpu", "prio"))
+                  else ("inconclusive (equal to another design within the spread)" if any(eq("fifo", w) for w in ("percpu", "prio"))
+                        else "not supported"))
+            out[(human_bytes(mem_b), None, "overhead", False)] = [
+                Check("H1", "FIFO has the highest application slowdown (%)", ", ".join(f"{SHORT[v]} {mean[v]:.2f} ± {std[v]:.2f}" for v in mean), f1)]
     return out
 
 
@@ -653,14 +702,17 @@ def hypotheses_markdown(results, synthetic):
     parts = ["# Automatic check of H1-H4\n"]
     if synthetic:
         parts.append("> **WARNING: synthetic test data.**\n")
-    parts.append("Each check compares the designs at the highest-pressure configuration (highest event rate, highest "
-                 "CPU load) using the mean over all repeats. The verdict is only a starting point: look at the numbers, "
-                 "the graphs and the spread before writing the conclusion. \"not testable\" means the run was not "
-                 "stressed enough to show the effect: use a smaller `MEM` or a higher rate.\n")
-    for (mem, rate, load), checks in results.items():
-        parts.append(f"## Memory {mem}, event rate {fmt_rate(rate)}, CPU load {load}\n")
-        parts.append(md_table(["", "Check", "Measured", "Verdict"],
-                              [[c.hid, c.text, c.values, c.verdict] for c in checks]) + "\n")
+    parts.append("Each table compares the designs in one configuration, using the mean over all repeats. Two numbers count as "
+                 "equal if they differ by less than the run-to-run spread (standard deviation), a small absolute tolerance or 5%; "
+                 "such cases are marked inconclusive and never as supported. At an unpaced rate the designs do not carry the same "
+                 "number of events per second, so loss comparisons there carry a caution; the paced rate is the like-for-like "
+                 "comparison. The verdicts are a starting point: read the numbers and the graphs before writing a conclusion.\n")
+    for (mem, rate, load, is_max), checks in results.items():
+        if rate is None:
+            parts.append(f"## Memory {mem}: application overhead (benign compile)\n")
+        else:
+            parts.append(f"## Memory {mem}: {config_title(rate, load, is_max)}\n")
+        parts.append(md_table(["", "Check", "Measured", "Verdict"], [[c.hid, c.text, c.values, c.verdict] for c in checks]) + "\n")
     return "\n".join(parts)
 
 
@@ -673,13 +725,18 @@ def update_readme(path, runs, agg):
         return False
     mem_b = min(set(runs["mem_bytes"]))
     r = runs[runs["mem_bytes"] == mem_b]
-    sub, rate, load = pressure_subset(r)
+    mxr = max(set(r["rate"]), key=lambda x: (x == 0, x))
+    cfgs = config_list(r)
+    pick = [cfgs[0]] + ([cfgs[-1]] if len(cfgs) > 1 and cfgs[-1][0] != mxr else [])
+    body = ""
+    for rate, load in pick:
+        sub = r[(r["rate"] == rate) & (r["cpu_load"] == load)]
+        body += f"**{config_title(rate, load, mxr)}**\n\n" + stat_table(sub, variants_present(sub)) + "\n\n"
     block = (f"{start}\n"
-             f"Headline result: buffer memory {human_bytes(mem_b)}, event rate `{fmt_rate(rate)}`, CPU load `{load}`, "
-             f"{len(sub) // max(sub['variant'].nunique(), 1)} repeats per design (mean ± std). "
+             f"Buffer memory {human_bytes(mem_b)}, mean ± std over the repeats. "
              "All graphs and tables: [`analysis/figures/`](analysis/figures/), "
              "numbers in [`analysis/figures/results_tables.md`](analysis/figures/results_tables.md).\n\n"
-             + stat_table(sub, variants_present(sub)) + "\n"
+             + body.rstrip() + "\n"
              f"{end}")
     new = re.sub(re.escape(start) + r".*?" + re.escape(end), lambda _: block, text, flags=re.S)
     path.write_text(new, encoding="utf-8")
@@ -737,6 +794,8 @@ def main():
                       f"Detection latency of detected attacks ({memlabel})", ylog=True)
         plotter.lines(a, r, "consumer_cpu_pct", "consumer CPU (% of one core)", f"fig_consumer_cpu{suffix}",
                       f"CPU cost of the monitoring pipeline ({memlabel})")
+        plotter.lines(a, r, "achieved_rate", "events per second actually carried", f"fig_achieved_rate{suffix}",
+                      f"Event rate each design really carried ({memlabel})", ylog=True)
         plotter.heatmaps(a, f"fig_heatmap{suffix}")
         plotter.sampling_effect(r, f"fig_sampling_effect{suffix}")
         plotter.detection_by_attack(det[det["mem_bytes"] == mem_b] if not det.empty else det,
@@ -756,8 +815,8 @@ def main():
     print(f"\n{len(runs)} main runs, {len(ovh)} overhead runs, "
           f"{agg.shape[0]} configurations, memory budgets: {', '.join(human_bytes(m) for m in sorted(set(runs['mem_bytes'])))}")
     print(f"wrote {len(plotter.written)} graphs + tables to {out}/")
-    for (mem, rate, load), checks in hyp.items():
-        print(f"\nhypothesis check (memory {mem}, rate {fmt_rate(rate)}, CPU load {load}):")
+    for (mem, rate, load, _), checks in hyp.items():
+        print(f"\nhypothesis check (memory {mem}, rate {fmt_rate(rate) if rate is not None else '-'}, CPU load {load}):")
         for c in checks:
             if c.verdict != "info":
                 print(f"  {c.hid}  {c.verdict:<14} {c.text}")

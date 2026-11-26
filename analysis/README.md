@@ -16,6 +16,7 @@ Reads every run folder in `results/` (format in [`docs/CONTRACT.md`](../docs/CON
 | `hypotheses.md` | check of hypotheses H1 to H4 against the measured numbers |
 | `fig_total_loss.png`, `fig_critical_loss.png` | event loss versus event rate, one panel per CPU load, one line per design |
 | `fig_ordering.png`, `fig_ooo_critical.png` | ordering accuracy, out-of-order events inside detected attacks |
+| `fig_achieved_rate.png` | events per second each design really carried (log scale) |
 | `fig_detection_rate.png`, `fig_detection_by_attack.png` | detection rate overall and per attack |
 | `fig_latency.png` | detection latency (log scale) |
 | `fig_consumer_cpu.png`, `fig_overhead.png` | CPU cost of the pipeline, slowdown of the benign compile |
@@ -29,3 +30,5 @@ Options: `--pdf` (also write PDFs), `--dpi`, `--include-incomplete` (also use ru
 ## Detection matching
 
 An injection in `injections.csv` counts as detected if `alerts.csv` has an alert with the same `attack` and `tgid` and an alert time between `start_ns` and `end_ns + 5 s`. Alerts that match no injection are counted as false alerts.
+
+The tables and the hypothesis check look at three configurations: the highest event rate at the lowest and at the highest CPU load, and the highest paced rate at the lowest CPU load (the only one where every design carries the same number of events per second). Numbers that differ by less than the run-to-run spread, 5% or a small tolerance count as equal, not as supported.
