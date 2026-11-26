@@ -71,6 +71,14 @@ On WSL2, limit it to 4 CPUs in `.wslconfig` (`processors=4`). On Ubuntu 26.04, i
 
 ## Running the experiments
 
+The results in the report were produced with:
+
+```bash
+sudo env RATES="50000 200000 0" LOADS="0 150" REPS=3 ./bench/run_bench.sh
+```
+
+The defaults in the table below are the larger plan from the proposal. The 84 run folders behind the report are in [`results.zip`](results.zip); unzip it into `results/` and run the analysis command below to regenerate every table and graph.
+
 `bench/run_bench.sh` loops over design variant, event rate, CPU load and repeats, and writes one folder per run in `results/`. Finished runs are skipped, so it can be stopped and restarted. `--list` prints the number of runs and the estimated time without running anything.
 
 | Variable | Meaning | Default |
@@ -124,7 +132,7 @@ Every number in the graphs is the mean over the repeats of one configuration; er
 - The detector uses only high-priority events and sampling only affects low-priority ones, so sampling cannot reduce detection in this setup. It only changes loss and CPU cost.
 - At the unpaced rate the designs do not reach the same event rate (the traced workload runs slower with some designs), so loss percentages there are not directly comparable. `analysis/figures/fig_achieved_rate.png` shows the rate each design really carried; the paced 200k rate is the like-for-like comparison.
 - CPU load also slows the event generators, so 150% CPU load gives fewer events per second than 0% at the unpaced rate.
-- The benign compile used for the overhead runs triggers one false ransomware alert per run (bulk deletion of build files), the same for every design.
+- The benign compile used for the overhead runs triggers one false ransomware alert per run (the `make clean` step deletes all 200 object files at once), the same for every design.
 - Detection latency includes up to one reorder window (50 ms) when an event before it was lost.
 - Overhead is measured with a compile benchmark only, without background noise.
 - Events carry the pid in the consumer's PID namespace, so tgids match `injections.csv` on WSL2 and in containers as well.
@@ -147,7 +155,7 @@ workloads/                  noise, CPU load, attack simulators, benign workload
 bench/run_bench.sh          experiment runner
 analysis/analyze.py         metrics, tables and graphs
 analysis/figures/           generated graphs and tables
-results/                    raw experiment output (not committed)
+results/                    raw experiment output (not committed; see results.zip)
 ```
 
 Each run folder in `results/` holds `config.json`, `summary.json`, `alerts.csv`, `injections.csv` (and `overhead.json` for overhead runs). The exact formats are in [`docs/CONTRACT.md`](docs/CONTRACT.md).

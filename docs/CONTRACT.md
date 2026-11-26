@@ -76,7 +76,7 @@ backend_close(b);
 The benchmark harness (Part 5) creates one folder per run:
 ```
 results/<design>_rate<N>_cpu<L>_rep<R>/
-    config.json       written by harness: design, mem, rate, cpu_load, rep, sampling
+    config.json       written by harness: kind (main|overhead), variant (fifo|percpu|prio|priosamp), design, mem, rate, cpu_load, rep, sampling
     summary.json      written by consumer (format below)
     alerts.csv        written by detector
     injections.csv    written by workload generator (ground truth)

@@ -82,7 +82,7 @@ n_ovh=0
 for v in $VARIANTS; do n_ovh=$((n_ovh + REPS)); done
 per_run=$((DURATION + 6))
 est_main=$((n_main * per_run))
-est_ovh=$((n_ovh * 30))
+est_ovh=$((n_ovh * 100))
 log "main runs: $n_main (about $((est_main / 60)) min), overhead runs: $n_ovh (about $((est_ovh / 60)) min)"
 log "results go to $OUT"
 [[ $list_only -eq 1 ]] && exit 0

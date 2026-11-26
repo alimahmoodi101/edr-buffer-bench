@@ -9,7 +9,7 @@ two C helpers (`build/edr_attack`, `build/edr_noise`). Only `/tmp/edr_sandbox/` 
 | `sudo ./run_attacks.sh --duration 30 --count 3 --out DIR` | Runs each attack `count` times (3×count injections), evenly spread over `duration`, and writes `DIR/injections.csv`. Run with sudo so `setuid(0)` really succeeds. |
 | `./noise.sh --rate N --duration 30` | About N low-priority events/s (writes to `/dev/null` + opens of a sandbox file) from one worker per CPU. `--rate 0` = as fast as possible. Prints the rate it achieved. |
 | `./cpu_load.sh --level 0\|50\|100\|150\|llm --duration 30` | `stress-ng`, one worker per CPU at L% (150 = 1.5 workers per CPU at 100%). `llm` runs `llama-bench` on a small GGUF model in a loop (see below). |
-| `./benign.sh compile\|copy\|extract` | Prints elapsed seconds only. compile = `make -j` of a generated 200-file C project (~12 s); copy = `cp -r` of 500 MB; extract = `tar xf` of the same. Inputs are generated once and cached. |
+| `./benign.sh compile\|copy\|extract` | Prints elapsed seconds only. compile = `make -j` of a generated 200-file C project (~40-55 s on 4 WSL vCPUs); copy = `cp -r` of 500 MB; extract = `tar xf` of the same. Inputs are generated once and cached. |
 | `./cleanup.sh [--all]` | Deletes attack/noise files (`--all`: also the ~1 GB of cached benign inputs). |
 | `python3 check_attacks.py DIR` | Sanity check: are the injected attacks visible in `DIR/events.csv`? |
 
@@ -33,9 +33,7 @@ Change them with `--files` / `--children`.
   deleted during a run, because deleting them is an unlink burst that looks exactly like ransomware.
 - `/tmp` is a RAM-backed tmpfs on WSL. The benign inputs use ~1 GB of RAM while cached
   (`BENIGN_MB=100` makes them smaller). `copy` and `extract` take well under 1 s on tmpfs, so repeat them.
-- On an idle 4-CPU WSL box, unpaced noise reaches ~300k events/s while traced. With the default
-  4 MiB of buffer memory the consumer kept up with that (no loss), so to show loss, use a smaller
-  `--mem` (e.g. 256K) or higher rates.
+- On the 4-vCPU WSL2 box used for the report, unpaced noise reached roughly 730-800k events/s while traced (FIFO and priority designs; per-CPU carried only ~200k/s). With the small buffer used for all reported runs (`--mem 256K`) this overloads the buffers; larger budgets such as 4M were not part of the final runs.
 - For `--level llm`, every machine needs llama.cpp and the model (`*.gguf` is git-ignored, ~490 MB):
   ```bash
   sudo apt install -y llama.cpp-tools
