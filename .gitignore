@@ -1,6 +1,6 @@
 build/
 results/*
 !results/.gitkeep
-analysis/figures/
 __pycache__/
 *.gguf
+results_*/
